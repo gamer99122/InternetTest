@@ -1,0 +1,9 @@
+node_modules/
+dist/
+*.log
+
+# Rust 建置產物
+src-tauri/target/
+
+# tauri-build 每次建置自動產生
+src-tauri/gen/

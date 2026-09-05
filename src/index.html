@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>網路健檢</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-dot" id="brandDot"></span>
+    網路健檢
+  </div>
+  <div class="topbar-meta" id="topbarMeta"></div>
+</header>
+
+<main>
+
+  <!-- 主要狀態區：一顆大圓環、一句結論、一個大按鈕 -->
+  <section class="hero card">
+    <div class="ring-wrap">
+      <svg class="ring" viewBox="0 0 120 120" aria-hidden="true">
+        <circle class="ring-track" cx="60" cy="60" r="52"></circle>
+        <circle class="ring-value" id="ringValue" cx="60" cy="60" r="52"></circle>
+      </svg>
+      <div class="ring-text">
+        <div class="ring-num" id="ringNum">—</div>
+        <div class="ring-label">穩定度</div>
+      </div>
+    </div>
+
+    <div class="hero-body">
+      <h1 class="headline" id="headline">還沒開始檢測</h1>
+      <p class="explanation" id="explanation">
+        按下下面的按鈕，就會開始檢查你的網路是不是正常。
+      </p>
+      <div class="advice" id="advice" hidden></div>
+
+      <div class="actions">
+        <button class="btn-primary" id="startBtn">
+          <span id="startBtnText">開始檢測</span>
+        </button>
+        <button class="btn-ghost" id="reportBtn" hidden>產生報告</button>
+      </div>
+
+      <div class="hero-stats" id="heroStats" hidden>
+        <span id="elapsedText"></span>
+        <span class="sep">・</span>
+        <span id="outageText"></span>
+      </div>
+    </div>
+  </section>
+
+  <!-- 連線路徑：這是整個程式最有用的一塊 -->
+  <section class="card">
+    <h2 class="section-title">
+      連線路徑
+      <span class="section-hint">從你的電腦一路連到網際網路，哪一段有問題會標成紅色</span>
+    </h2>
+    <div class="path" id="path">
+      <div class="path-empty">按下「開始檢測」後，這裡會顯示你的網路走過哪些地方。</div>
+    </div>
+  </section>
+
+  <!-- 折線圖 -->
+  <section class="card" id="chartCard" hidden>
+    <h2 class="section-title">
+      最近一分鐘的反應速度
+      <span class="section-hint">線越平穩代表網路越穩定；線斷掉的地方就是連不上的時候</span>
+    </h2>
+    <div class="chart-wrap">
+      <canvas id="chart" width="900" height="180"></canvas>
+      <div class="chart-legend" id="chartLegend"></div>
+    </div>
+  </section>
+
+  <!-- 事件紀錄 -->
+  <section class="card" id="eventsCard" hidden>
+    <h2 class="section-title">
+      檢測紀錄
+      <span class="section-hint">按「產生報告」可以存成一份檔案，傳給網路公司的客服</span>
+    </h2>
+    <ul class="events" id="events"></ul>
+  </section>
+
+  <section class="card extras" id="extrasCard" hidden>
+    <div class="extra" id="wifiExtra" hidden>
+      <div class="extra-label">無線訊號</div>
+      <div class="extra-value" id="wifiValue">—</div>
+    </div>
+    <div class="extra">
+      <div class="extra-label">查詢網址速度</div>
+      <div class="extra-value" id="dnsValue">—</div>
+    </div>
+    <div class="extra">
+      <div class="extra-label">使用的網路</div>
+      <div class="extra-value" id="ifaceValue">—</div>
+    </div>
+    <div class="extra extra-wide">
+      <button class="btn-link" id="folderBtn">打開存放紀錄的資料夾</button>
+    </div>
+  </section>
+
+</main>
+
+<div class="toast" id="toast" hidden></div>
+
+<script src="main.js"></script>
+</body>
+</html>
