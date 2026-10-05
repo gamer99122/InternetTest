@@ -84,19 +84,18 @@ pub fn diagnose(readings: &[Reading<'_>], wifi: Option<&WifiStatus>, dns: DnsHea
         let explanation = match wifi {
             Some(w) if w.signal_pct.is_some() => {
                 format!(
-                    "完全連不上網路。{}，但訊號似乎沒有真正連通。",
+                    "本次測試目標都未回應。{}；仍需確認 ICMP 政策。",
                     w.plain_text().unwrap_or_else(|| "有偵測到 Wi-Fi".into())
                 )
             }
-            _ => "完全連不上網路，連家裡的分享器都沒有回應。".into(),
+            _ => "本次測試目標都未回應，可能是連線異常或 ICMP 被限制。".into(),
         };
         return Verdict {
             grade: Grade::Down,
-            headline: "網路不通".into(),
+            headline: "測試目標未回應".into(),
             explanation,
             suggestion: Some(
-                "請先確認網路線有插好、Wi-Fi 有連上。如果都正常，把無線分享器的電源拔掉等 30 秒再插回去。"
-                    .into(),
+                "請確認網路線及 Wi-Fi 連線，並聯絡機關資訊人員確認是否限制測試流量。".into(),
             ),
             culprit: Some(SegmentKind::Router),
         };
@@ -117,9 +116,7 @@ pub fn diagnose(readings: &[Reading<'_>], wifi: Option<&WifiStatus>, dns: DnsHea
                         "{}，這就是網路會卡的原因。這不是網路公司的問題。",
                         w.plain_text().unwrap_or_else(|| "Wi-Fi 訊號很弱".into())
                     ),
-                    suggestion: Some(
-                        "請靠近無線分享器一點，或是改用網路線直接連接。".into(),
-                    ),
+                    suggestion: Some("請靠近無線分享器一點，或是改用網路線直接連接。".into()),
                     culprit: Some(SegmentKind::Router),
                 };
             }
@@ -154,13 +151,9 @@ pub fn diagnose(readings: &[Reading<'_>], wifi: Option<&WifiStatus>, dns: DnsHea
         return Verdict {
             grade: Grade::Poor,
             headline: "網路通，但打不開網頁".into(),
-            explanation:
-                "連線本身是正常的，但是查詢網址的服務（DNS）沒有回應，所以網頁會打不開。"
-                    .into(),
-            suggestion: Some(
-                "把無線分享器重開機通常就會好。如果還是不行，可以請人幫忙把 DNS 改成 1.1.1.1。"
-                    .into(),
-            ),
+            explanation: "連線本身是正常的，但是查詢網址的服務（DNS）沒有回應，所以網頁會打不開。"
+                .into(),
+            suggestion: Some("請由機關資訊人員確認核准的 DNS 設定與查詢政策。".into()),
             culprit: None,
         };
     }
@@ -173,7 +166,7 @@ pub fn diagnose(readings: &[Reading<'_>], wifi: Option<&WifiStatus>, dns: DnsHea
                 "連線速度正常，但查詢網址平均要花 {:.0} 毫秒，所以每次打開新網頁都會先卡一下。",
                 dns.avg_ms.unwrap_or_default()
             ),
-            suggestion: Some("把無線分享器重開機通常會改善。".into()),
+            suggestion: Some("請由機關資訊人員檢查 DNS 回應時間。".into()),
             culprit: None,
         };
     }
@@ -183,7 +176,7 @@ pub fn diagnose(readings: &[Reading<'_>], wifi: Option<&WifiStatus>, dns: DnsHea
         Grade::Good => Verdict {
             grade: Grade::Good,
             headline: "網路狀況良好".into(),
-            explanation: "四段連線都很穩定，看影片、開視訊都不會有問題。".into(),
+            explanation: "本次啟用的測試目標回應穩定；未測項目與實際應用服務仍需另行確認。".into(),
             suggestion: None,
             culprit: None,
         },
@@ -260,10 +253,26 @@ mod tests {
     fn everything_healthy_blames_nobody() {
         let (r, i, d, n) = (good(), good(), good(), good());
         let readings = vec![
-            Reading { kind: SegmentKind::Router, label: "家裡的網路", summary: &r },
-            Reading { kind: SegmentKind::Isp, label: "中華電信", summary: &i },
-            Reading { kind: SegmentKind::Domestic, label: "國內網路", summary: &d },
-            Reading { kind: SegmentKind::International, label: "國外網路", summary: &n },
+            Reading {
+                kind: SegmentKind::Router,
+                label: "家裡的網路",
+                summary: &r,
+            },
+            Reading {
+                kind: SegmentKind::Isp,
+                label: "中華電信",
+                summary: &i,
+            },
+            Reading {
+                kind: SegmentKind::Domestic,
+                label: "國內網路",
+                summary: &d,
+            },
+            Reading {
+                kind: SegmentKind::International,
+                label: "國外網路",
+                summary: &n,
+            },
         ];
         let v = diagnose(&readings, None, healthy_dns());
         assert_eq!(v.grade, Grade::Good);
@@ -277,16 +286,36 @@ mod tests {
         let r = good();
         let bad = summary(Grade::Poor, 8.0, 120.0, 60.0);
         let readings = vec![
-            Reading { kind: SegmentKind::Router, label: "家裡的網路", summary: &r },
-            Reading { kind: SegmentKind::Isp, label: "中華電信", summary: &bad },
-            Reading { kind: SegmentKind::Domestic, label: "國內網路", summary: &bad },
-            Reading { kind: SegmentKind::International, label: "國外網路", summary: &bad },
+            Reading {
+                kind: SegmentKind::Router,
+                label: "家裡的網路",
+                summary: &r,
+            },
+            Reading {
+                kind: SegmentKind::Isp,
+                label: "中華電信",
+                summary: &bad,
+            },
+            Reading {
+                kind: SegmentKind::Domestic,
+                label: "國內網路",
+                summary: &bad,
+            },
+            Reading {
+                kind: SegmentKind::International,
+                label: "國外網路",
+                summary: &bad,
+            },
         ];
         let v = diagnose(&readings, None, healthy_dns());
         assert_eq!(v.culprit, Some(SegmentKind::Isp));
         assert!(v.explanation.contains("中華電信"), "{}", v.explanation);
-        assert!(v.explanation.contains("家裡的網路都正常"), "{}", v.explanation);
-        assert!(v.suggestion.unwrap().contains("客服"));
+        assert!(
+            v.explanation.contains("家裡的網路都正常"),
+            "{}",
+            v.explanation
+        );
+        assert!(v.suggestion.unwrap().contains("資訊人員"));
     }
 
     #[test]
@@ -295,9 +324,21 @@ mod tests {
         let bad = summary(Grade::Poor, 10.0, 90.0, 40.0);
         let worse = summary(Grade::Down, 100.0, 0.0, 0.0);
         let readings = vec![
-            Reading { kind: SegmentKind::Router, label: "家裡的網路", summary: &bad },
-            Reading { kind: SegmentKind::Isp, label: "中華電信", summary: &worse },
-            Reading { kind: SegmentKind::Domestic, label: "國內網路", summary: &worse },
+            Reading {
+                kind: SegmentKind::Router,
+                label: "家裡的網路",
+                summary: &bad,
+            },
+            Reading {
+                kind: SegmentKind::Isp,
+                label: "中華電信",
+                summary: &worse,
+            },
+            Reading {
+                kind: SegmentKind::Domestic,
+                label: "國內網路",
+                summary: &worse,
+            },
         ];
         let v = diagnose(&readings, None, healthy_dns());
         assert_eq!(v.culprit, Some(SegmentKind::Router));
@@ -308,8 +349,16 @@ mod tests {
         let bad = summary(Grade::Poor, 6.0, 40.0, 25.0);
         let g = good();
         let readings = vec![
-            Reading { kind: SegmentKind::Router, label: "家裡的網路", summary: &bad },
-            Reading { kind: SegmentKind::Isp, label: "中華電信", summary: &g },
+            Reading {
+                kind: SegmentKind::Router,
+                label: "家裡的網路",
+                summary: &bad,
+            },
+            Reading {
+                kind: SegmentKind::Isp,
+                label: "中華電信",
+                summary: &g,
+            },
         ];
         let weak = WifiStatus {
             ssid: Some("MyWiFi".into()),
@@ -326,22 +375,50 @@ mod tests {
         let g = good();
         let bad = summary(Grade::Poor, 7.0, 320.0, 90.0);
         let readings = vec![
-            Reading { kind: SegmentKind::Router, label: "家裡的網路", summary: &g },
-            Reading { kind: SegmentKind::Isp, label: "中華電信", summary: &g },
-            Reading { kind: SegmentKind::Domestic, label: "國內網路", summary: &g },
-            Reading { kind: SegmentKind::International, label: "國外網路", summary: &bad },
+            Reading {
+                kind: SegmentKind::Router,
+                label: "家裡的網路",
+                summary: &g,
+            },
+            Reading {
+                kind: SegmentKind::Isp,
+                label: "中華電信",
+                summary: &g,
+            },
+            Reading {
+                kind: SegmentKind::Domestic,
+                label: "國內網路",
+                summary: &g,
+            },
+            Reading {
+                kind: SegmentKind::International,
+                label: "國外網路",
+                summary: &bad,
+            },
         ];
         let v = diagnose(&readings, None, healthy_dns());
         assert_eq!(v.culprit, Some(SegmentKind::International));
-        assert!(v.explanation.contains("國內網路都正常"), "{}", v.explanation);
+        assert!(
+            v.explanation.contains("國內網路都正常"),
+            "{}",
+            v.explanation
+        );
     }
 
     #[test]
     fn everything_down_suggests_checking_the_cable() {
         let down = summary(Grade::Down, 100.0, 0.0, 0.0);
         let readings = vec![
-            Reading { kind: SegmentKind::Router, label: "家裡的網路", summary: &down },
-            Reading { kind: SegmentKind::Isp, label: "電信商", summary: &down },
+            Reading {
+                kind: SegmentKind::Router,
+                label: "家裡的網路",
+                summary: &down,
+            },
+            Reading {
+                kind: SegmentKind::Isp,
+                label: "電信商",
+                summary: &down,
+            },
         ];
         let v = diagnose(&readings, None, DnsHealth::default());
         assert_eq!(v.grade, Grade::Down);
@@ -352,13 +429,24 @@ mod tests {
     fn broken_dns_is_reported_even_when_pings_are_perfect() {
         let g = good();
         let readings = vec![
-            Reading { kind: SegmentKind::Router, label: "家裡的網路", summary: &g },
-            Reading { kind: SegmentKind::International, label: "國外網路", summary: &g },
+            Reading {
+                kind: SegmentKind::Router,
+                label: "家裡的網路",
+                summary: &g,
+            },
+            Reading {
+                kind: SegmentKind::International,
+                label: "國外網路",
+                summary: &g,
+            },
         ];
         let v = diagnose(
             &readings,
             None,
-            DnsHealth { working: false, avg_ms: None },
+            DnsHealth {
+                working: false,
+                avg_ms: None,
+            },
         );
         assert_eq!(v.headline, "網路通，但打不開網頁");
     }
@@ -374,7 +462,10 @@ mod tests {
         let v = diagnose(
             &readings,
             None,
-            DnsHealth { working: true, avg_ms: Some(900.0) },
+            DnsHealth {
+                working: true,
+                avg_ms: Some(900.0),
+            },
         );
         assert_eq!(v.grade, Grade::Fair);
         assert!(v.explanation.contains("900"), "{}", v.explanation);
@@ -399,8 +490,16 @@ mod tests {
         let bad = summary(Grade::Poor, 9.0, 150.0, 70.0);
         let g = good();
         let readings = vec![
-            Reading { kind: SegmentKind::Router, label: "家裡的網路", summary: &g },
-            Reading { kind: SegmentKind::Isp, label: "中華電信", summary: &bad },
+            Reading {
+                kind: SegmentKind::Router,
+                label: "家裡的網路",
+                summary: &g,
+            },
+            Reading {
+                kind: SegmentKind::Isp,
+                label: "中華電信",
+                summary: &bad,
+            },
         ];
         let v = diagnose(&readings, None, healthy_dns());
         let text = format!(
@@ -416,9 +515,21 @@ mod tests {
 
     #[test]
     fn symptom_headline_matches_the_actual_problem() {
-        assert_eq!(describe_symptom(&summary(Grade::Down, 100.0, 0.0, 0.0)), "網路斷線中");
-        assert_eq!(describe_symptom(&summary(Grade::Poor, 12.0, 30.0, 5.0)), "網路會斷斷續續");
-        assert_eq!(describe_symptom(&summary(Grade::Poor, 0.0, 30.0, 80.0)), "網路忽快忽慢");
-        assert_eq!(describe_symptom(&summary(Grade::Poor, 0.0, 400.0, 5.0)), "網路反應很慢");
+        assert_eq!(
+            describe_symptom(&summary(Grade::Down, 100.0, 0.0, 0.0)),
+            "網路斷線中"
+        );
+        assert_eq!(
+            describe_symptom(&summary(Grade::Poor, 12.0, 30.0, 5.0)),
+            "網路會斷斷續續"
+        );
+        assert_eq!(
+            describe_symptom(&summary(Grade::Poor, 0.0, 30.0, 80.0)),
+            "網路忽快忽慢"
+        );
+        assert_eq!(
+            describe_symptom(&summary(Grade::Poor, 0.0, 400.0, 5.0)),
+            "網路反應很慢"
+        );
     }
 }

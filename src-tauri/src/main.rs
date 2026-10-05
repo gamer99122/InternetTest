@@ -41,10 +41,14 @@ fn output_dir(app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 #[tauri::command]
-async fn start_monitoring(app: AppHandle, monitor: State<'_, Monitor>) -> Result<(), String> {
+async fn start_monitoring(
+    app: AppHandle,
+    monitor: State<'_, Monitor>,
+    external: Option<bool>,
+) -> Result<(), String> {
     let dir = output_dir(&app)?;
     monitor
-        .start(app.clone(), dir)
+        .start(app.clone(), dir, external.unwrap_or(false))
         .await
         .map_err(|e| format!("無法開始檢測：{e}"))
 }

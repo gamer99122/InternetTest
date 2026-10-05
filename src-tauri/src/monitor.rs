@@ -177,14 +177,18 @@ impl State {
 /// 監測引擎的對外介面。
 pub struct Monitor {
     state: Arc<Mutex<State>>,
-    stop: Arc<AtomicBool>,
+    stop: Mutex<Arc<AtomicBool>>,
+    start_gate: tokio::sync::Mutex<()>,
+    task: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl Monitor {
     pub fn new() -> Self {
         Monitor {
             state: Arc::new(Mutex::new(State::new())),
-            stop: Arc::new(AtomicBool::new(false)),
+            stop: Mutex::new(Arc::new(AtomicBool::new(false))),
+            start_gate: tokio::sync::Mutex::new(()),
+            task: Mutex::new(None),
         }
     }
 
@@ -193,14 +197,33 @@ impl Monitor {
     }
 
     /// 開始監測。會先花一兩秒偵測網路環境，然後啟動背景 task。
-    pub async fn start(&self, app: AppHandle, log_dir: PathBuf) -> anyhow::Result<()> {
+    pub async fn start(
+        &self,
+        app: AppHandle,
+        log_dir: PathBuf,
+        external: bool,
+    ) -> anyhow::Result<()> {
+        let _gate = self.start_gate.lock().await;
         if self.is_running() {
             return Ok(());
         }
+        // Finish the previous run before reusing state or switching to internal-only mode.
+        let previous = self.task.lock().take();
+        if let Some(previous) = previous {
+            let _ = previous.await;
+        }
+        let stop = Arc::new(AtomicBool::new(false));
+        *self.stop.lock() = stop.clone();
 
         // 偵測環境要花時間（traceroute 找電信商），先讓前端知道在忙
         let _ = app.emit("detecting", ());
-        let topology = crate::targets::detect().await;
+        let topology = crate::targets::detect(external).await;
+        if stop.load(Ordering::SeqCst) {
+            anyhow::bail!("檢測已取消");
+        }
+        if topology.segments.is_empty() {
+            anyhow::bail!("找不到預設閘道，請交由資訊人員確認網路設定");
+        }
 
         let started = Local::now();
         let logger = match Logger::create(&log_dir, started) {
@@ -211,6 +234,9 @@ impl Monitor {
 
         {
             let mut s = self.state.lock();
+            if stop.load(Ordering::SeqCst) {
+                anyhow::bail!("檢測已取消");
+            }
             s.reset();
             s.running = true;
             s.started_at = Some(started);
@@ -222,20 +248,18 @@ impl Monitor {
             s.topology = Some(topology);
         }
 
-        self.stop.store(false, Ordering::SeqCst);
-
         let state = self.state.clone();
-        let stop = self.stop.clone();
-        tokio::spawn(async move {
+        let task = tokio::spawn(async move {
             run_loop(state, stop, app).await;
         });
+        *self.task.lock() = Some(task);
 
         Ok(())
     }
 
     /// 停止監測。已經收集到的資料會保留，還可以產生報告。
     pub fn stop(&self) {
-        self.stop.store(true, Ordering::SeqCst);
+        self.stop.lock().store(true, Ordering::SeqCst);
         let mut s = self.state.lock();
         s.running = false;
         // 結束時把還沒寫進磁碟的紀錄補上
@@ -281,7 +305,14 @@ async fn run_loop(state: Arc<Mutex<State>>, stop: Arc<AtomicBool>, app: AppHandl
 
         probe_round(&state, &segments).await;
 
-        if tick_no % DNS_EVERY == 0 {
+        if stop.load(Ordering::SeqCst) {
+            break;
+        }
+        if segments
+            .iter()
+            .any(|s| s.kind == SegmentKind::International)
+            && tick_no % DNS_EVERY == 0
+        {
             probe_dns(&state, tick_no).await;
         }
         if tick_no % WIFI_EVERY == 0 {
@@ -291,7 +322,10 @@ async fn run_loop(state: Arc<Mutex<State>>, stop: Arc<AtomicBool>, app: AppHandl
             state.lock().wifi = wifi;
         }
 
-        detect_outage(&state, &app).await;
+        if stop.load(Ordering::SeqCst) {
+            break;
+        }
+        detect_outage(&state, &app, &stop).await;
 
         {
             let mut s = state.lock();
@@ -360,15 +394,20 @@ async fn probe_dns(state: &Arc<Mutex<State>>, seq: u64) {
 }
 
 /// 判斷斷線的開始與結束，並在開始時觸發路徑追蹤與桌面通知。
-async fn detect_outage(state: &Arc<Mutex<State>>, app: &AppHandle) {
+async fn detect_outage(state: &Arc<Mutex<State>>, app: &AppHandle, stop: &Arc<AtomicBool>) {
     let now = Local::now();
 
     let (culprit_label, just_started, just_ended) = {
         let mut s = state.lock();
 
+        let reference = if s.windows.contains_key(&OUTAGE_SEGMENT) {
+            OUTAGE_SEGMENT
+        } else {
+            SegmentKind::Router
+        };
         let down = s
             .windows
-            .get(&OUTAGE_SEGMENT)
+            .get(&reference)
             .map(|w| w.summarize().grade == Grade::Down)
             .unwrap_or(false);
 
@@ -438,6 +477,7 @@ async fn detect_outage(state: &Arc<Mutex<State>>, app: &AppHandle) {
     // 趁還斷著的時候追蹤路徑，才看得出斷在哪一跳。
     // 丟到背景做，不能卡住主迴圈。
     let state2 = state.clone();
+    let cancel = stop.clone();
     let index = state.lock().open_outage;
     tokio::spawn(async move {
         let target = {
@@ -451,11 +491,23 @@ async fn detect_outage(state: &Arc<Mutex<State>>, app: &AppHandle) {
         };
         let Some(target) = target else { return };
 
-        if let Ok(mut hops) =
-            traceroute::trace(target, 15, Duration::from_millis(700), 2).await
+        if let Ok(mut hops) = traceroute::trace_cancellable(
+            target,
+            15,
+            Duration::from_millis(700),
+            2,
+            Some(cancel.clone()),
+        )
+        .await
         {
-            traceroute::resolve_hostnames(&mut hops).await;
+            traceroute::resolve_hostnames(&mut hops, &cancel).await;
+            if cancel.load(Ordering::SeqCst) {
+                return;
+            }
             let mut s = state2.lock();
+            if cancel.load(Ordering::SeqCst) {
+                return;
+            }
             if let Some(i) = index {
                 if let Some(event) = s.events.get_mut(i) {
                     event.trace = Some(hops);
@@ -467,8 +519,12 @@ async fn detect_outage(state: &Arc<Mutex<State>>, app: &AppHandle) {
 
 /// 把進行中的斷線事件結案。
 fn close_open_outage(s: &mut State, now: DateTime<Local>) {
-    let Some(i) = s.open_outage.take() else { return };
-    let Some(event) = s.events.get_mut(i) else { return };
+    let Some(i) = s.open_outage.take() else {
+        return;
+    };
+    let Some(event) = s.events.get_mut(i) else {
+        return;
+    };
 
     let secs = (now - event.started_at).num_seconds().max(0);
     event.ended_at = Some(now);
@@ -606,7 +662,7 @@ fn build_snapshot(s: &State) -> Snapshot {
     };
 
     let dns_health = s.dns_health();
-    let dns_view = DnsView {
+    let mut dns_view = DnsView {
         working: dns_health.working,
         avg_ms: dns_health.avg_ms,
         status_text: if !dns_health.working {
@@ -626,6 +682,15 @@ fn build_snapshot(s: &State) -> Snapshot {
             "good".into()
         },
     };
+
+    if !segments_cfg
+        .iter()
+        .any(|s| s.kind == SegmentKind::International)
+    {
+        dns_view.status_text = "未啟用".into();
+        // 沒有查詢過，就不能顯示成綠色：綠色的意思是「測過而且正常」
+        dns_view.color = String::new();
+    }
 
     let outage_text = if s.events.is_empty() {
         "沒有斷線過".to_string()
@@ -704,6 +769,36 @@ mod tests {
     }
 
     #[test]
+    fn dns_card_is_neutral_when_dns_is_not_being_tested() {
+        // 預設只測閘道、不做 DNS 查詢：卡片寫「未啟用」，而且不能是代表正常的綠色
+        let snap = build_snapshot(&State::new());
+        assert_eq!(snap.dns.status_text, "未啟用");
+        assert_eq!(snap.dns.color, "");
+    }
+
+    #[test]
+    fn dns_card_is_not_disabled_once_external_tests_are_on() {
+        let mut s = State::new();
+        s.topology = Some(Topology {
+            segments: vec![Segment {
+                kind: SegmentKind::International,
+                addr: std::net::Ipv4Addr::new(192, 0, 2, 1),
+                label: "國外網路".into(),
+                detail: String::new(),
+            }],
+            interface_name: String::new(),
+            is_wifi: false,
+            local_ip: None,
+            gateway: None,
+            isp_name: None,
+            notes: Vec::new(),
+        });
+        let snap = build_snapshot(&s);
+        assert_ne!(snap.dns.status_text, "未啟用");
+        assert_eq!(snap.dns.color, "good");
+    }
+
+    #[test]
     fn closing_an_outage_records_its_duration() {
         let mut s = State::new();
         let start = Local::now();
@@ -751,9 +846,18 @@ mod tests {
         let mut isp = Window::new(SegmentKind::Isp, 10);
         let mut intl = Window::new(SegmentKind::International, 10);
         for _ in 0..5 {
-            router.push(Sample { at: Local::now(), rtt_ms: Some(3.0) });
-            isp.push(Sample { at: Local::now(), rtt_ms: None });
-            intl.push(Sample { at: Local::now(), rtt_ms: None });
+            router.push(Sample {
+                at: Local::now(),
+                rtt_ms: Some(3.0),
+            });
+            isp.push(Sample {
+                at: Local::now(),
+                rtt_ms: None,
+            });
+            intl.push(Sample {
+                at: Local::now(),
+                rtt_ms: None,
+            });
         }
         s.windows.insert(SegmentKind::Router, router);
         s.windows.insert(SegmentKind::Isp, isp);

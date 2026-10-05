@@ -33,6 +33,7 @@ const el = {
   ifaceValue: $("ifaceValue"),
   folderBtn: $("folderBtn"),
   toast: $("toast"),
+  externalTests: $("externalTests"),
 };
 
 // 圓環半徑 52 的周長，和 CSS 裡的 stroke-dasharray 對應
@@ -65,6 +66,7 @@ function msText(value) {
 
 function render(snap) {
   latest = snap;
+  el.externalTests.disabled = snap.running || busy;
 
   // 標題列
   setClass(el.brandDot, "brand-dot", snap.running
@@ -318,6 +320,7 @@ async function refresh() {
 async function toggleMonitoring() {
   if (busy) return;
   busy = true;
+  el.externalTests.disabled = true;
   el.startBtn.disabled = true;
 
   try {
@@ -326,7 +329,7 @@ async function toggleMonitoring() {
       showToast("已停止檢測。可以按「產生報告」把結果存下來。");
     } else {
       el.startBtnText.textContent = "正在偵測網路…";
-      await invoke("start_monitoring");
+      await invoke("start_monitoring", { external: el.externalTests.checked });
       await refresh();
     }
   } catch (err) {
@@ -335,6 +338,7 @@ async function toggleMonitoring() {
   } finally {
     busy = false;
     el.startBtn.disabled = false;
+    el.externalTests.disabled = Boolean(latest && latest.running);
   }
 }
 
@@ -372,7 +376,7 @@ listen("snapshot", (event) => render(event.payload));
 // 偵測網路環境要花幾秒（要做路徑追蹤），期間給使用者一點回饋
 listen("detecting", () => {
   el.headline.textContent = "正在檢查你的網路…";
-  el.explanation.textContent = "正在找出你的網路走哪條路連出去，大約需要幾秒鐘。";
+  el.explanation.textContent = "正在確認本次測試的網路目標，請稍候。";
   el.advice.hidden = true;
 });
 

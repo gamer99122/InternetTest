@@ -7,6 +7,10 @@
 //! 一樣是走 `IcmpSendEcho` 加 TTL，不需要系統管理員權限。
 
 use std::net::Ipv4Addr;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use std::time::Duration;
 
 use serde::Serialize;
@@ -45,6 +49,16 @@ pub async fn trace(
     timeout: Duration,
     probes_per_hop: u8,
 ) -> anyhow::Result<Vec<Hop>> {
+    trace_cancellable(dest, max_hops, timeout, probes_per_hop, None).await
+}
+
+pub async fn trace_cancellable(
+    dest: Ipv4Addr,
+    max_hops: u8,
+    timeout: Duration,
+    probes_per_hop: u8,
+    cancel: Option<Arc<AtomicBool>>,
+) -> anyhow::Result<Vec<Hop>> {
     // IcmpSendEcho 是阻塞呼叫，整段搬到 blocking 執行緒，不要卡住 tokio runtime
     let hops = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<Hop>> {
         let handle = IcmpHandle::open()?;
@@ -57,6 +71,9 @@ pub async fn trace(
             let mut reached_destination = false;
 
             for _ in 0..probes_per_hop.max(1) {
+                if cancel.as_ref().is_some_and(|c| c.load(Ordering::SeqCst)) {
+                    return Ok(hops);
+                }
                 let echo: Echo = handle.echo(dest, timeout, Some(ttl));
 
                 match echo.outcome {
@@ -111,9 +128,12 @@ pub async fn trace(
 /// 對每一跳做反向 DNS 查詢，補上主機名稱。
 ///
 /// 這一步純粹是為了讓報告好讀（看得出「這一跳是中華電信的機器」），
-/// 查不到就算了，不影響任何判斷。
-pub async fn resolve_hostnames(hops: &mut [Hop]) {
+/// 查不到就算了，不影響任何判斷。`cancel` 被設定時立刻停止，已經查到的保留。
+pub async fn resolve_hostnames(hops: &mut [Hop], cancel: &AtomicBool) {
     for hop in hops.iter_mut() {
+        if cancel.load(Ordering::SeqCst) {
+            return;
+        }
         let Some(addr) = hop.addr else { continue };
         // 私有位址不可能有公開的 PTR，省下這次查詢
         if is_private_v4(addr) {

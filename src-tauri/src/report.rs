@@ -1,7 +1,5 @@
-//! 產生可以直接寄給電信商客服的 HTML 報告。
-//!
-//! 分成兩半：上半部是白話結論，使用者自己看得懂；
-//! 下半部是原始數據，客服的工程師看得懂。兩邊都需要。
+//! 產生供機關資訊人員判讀的去識別 HTML 報告。
+//! 匯出前移除網路名稱、位址、路徑與可能間接包含識別資訊的文字。
 
 use std::fmt::Write as _;
 
@@ -36,7 +34,37 @@ fn ms(v: Option<f64>) -> String {
 }
 
 /// 產生完整的 HTML 報告。
-pub fn render(snap: &Snapshot) -> String {
+pub fn render(source: &Snapshot) -> String {
+    let mut safe = source.clone();
+    safe.interface_name = "（已遮蔽）".into();
+    safe.isp_name = None;
+    safe.wifi_text = safe
+        .wifi
+        .as_ref()
+        .and_then(|w| w.signal_pct)
+        .map(|p| format!("Wi-Fi 訊號 {p}%"));
+    if let Some(w) = safe.wifi.as_mut() {
+        w.ssid = None;
+    }
+    safe.log_path = None;
+    safe.notes = vec![
+        "本報告已省略網路名稱、IP、主機名稱與檔案路徑。測試未回應也可能是機關網路政策限制。".into(),
+    ];
+    for seg in &mut safe.segments {
+        seg.label = seg.kind.default_label().into();
+        seg.detail.clear();
+        seg.target = "（已遮蔽）".into();
+    }
+    for event in &mut safe.events {
+        event.trace = None;
+        event.text = "測試目標未回應紀錄".into();
+    }
+    safe.verdict.explanation =
+        "結果僅代表本次啟用的探測目標，請由機關資訊人員配合網路政策判讀。".into();
+    if safe.verdict.suggestion.is_some() {
+        safe.verdict.suggestion = Some("請交由機關資訊人員確認。".into());
+    }
+    let snap = &safe;
     let now = Local::now();
     let mut html = String::with_capacity(16 * 1024);
 
@@ -47,6 +75,7 @@ pub fn render(snap: &Snapshot) -> String {
 <html lang="zh-Hant">
 <head>
 <meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>網路健檢報告</title>
 <style>
@@ -176,9 +205,7 @@ pub fn render(snap: &Snapshot) -> String {
     if snap.events.is_empty() {
         html.push_str("<p class=\"empty\">整段檢測期間都沒有斷線。</p>\n");
     } else {
-        html.push_str(
-            "<table>\n<tr><th>發生時間</th><th>持續多久</th><th>說明</th></tr>\n",
-        );
+        html.push_str("<table>\n<tr><th>發生時間</th><th>持續多久</th><th>說明</th></tr>\n");
         for e in &snap.events {
             let _ = write!(
                 html,
@@ -195,9 +222,7 @@ pub fn render(snap: &Snapshot) -> String {
     }
 
     // --- 技術附錄 ---
-    html.push_str(
-        "<h2>技術數據</h2>\n<p class=\"tech\">以下提供給網路業者的技術人員參考。</p>\n",
-    );
+    html.push_str("<h2>技術數據</h2>\n<p class=\"tech\">以下供機關資訊人員判讀。</p>\n");
     html.push_str(
         "<div class=\"tech\">\n<table>\n<tr><th>段落</th><th>探測目標</th><th>平均</th><th>最高</th><th>抖動</th><th>封包遺失</th></tr>\n",
     );
@@ -254,14 +279,12 @@ pub fn render(snap: &Snapshot) -> String {
         html.push_str("</ul>\n");
     }
 
-    let _ = write!(
-        html,
-        r#"<footer>本報告由「網路健檢」自動產生。逐筆原始紀錄另存於 {}。</footer>
+    html.push_str(
+        r#"<footer>本報告由「網路健檢」自動產生，已省略敏感網路識別資訊。</footer>
 </div>
 </body>
 </html>
 "#,
-        esc(snap.log_path.as_deref().unwrap_or("（未儲存）")),
     );
 
     html
@@ -270,6 +293,70 @@ pub fn render(snap: &Snapshot) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn report_does_not_leak_identifiers_through_summary_or_notes() {
+        let mut snap = crate::monitor::Monitor::new().snapshot();
+        let secret = "SENSITIVE_NETWORK_77";
+        snap.interface_name = secret.into();
+        snap.isp_name = Some(secret.into());
+        snap.wifi = Some(crate::wifi::WifiStatus {
+            ssid: Some(secret.into()),
+            signal_pct: Some(42),
+            rx_mbps: Some(72),
+        });
+        snap.wifi_text = Some(format!("Wi-Fi「{secret}」"));
+        snap.log_path = Some(format!("C:\\Users\\{secret}\\report.csv"));
+        snap.notes.push(secret.into());
+        snap.verdict.explanation = secret.into();
+        snap.verdict.suggestion = Some(secret.into());
+        snap.segments.push(crate::monitor::SegmentView {
+            kind: crate::targets::SegmentKind::Router,
+            label: secret.into(),
+            description: "預設閘道".into(),
+            detail: secret.into(),
+            target: "10.23.45.67".into(),
+            status_text: "正常".into(),
+            color: "good".into(),
+            last_ms: Some(3.0),
+            avg_ms: Some(3.0),
+            max_ms: Some(3.0),
+            loss_pct: 0.0,
+            jitter_ms: Some(0.0),
+            uptime_pct: 100.0,
+            spark: vec![Some(3.0)],
+        });
+        snap.events.push(crate::monitor::OutageEvent {
+            started_at: Local::now(),
+            ended_at: None,
+            duration_secs: None,
+            culprit: None,
+            text: secret.into(),
+            started_text: "12:00:00".into(),
+            trace: Some(vec![crate::traceroute::Hop {
+                ttl: 1,
+                addr: Some("10.23.45.67".parse().unwrap()),
+                rtt_ms: Some(3.0),
+                hostname: Some(secret.into()),
+                sent: 1,
+                received: 1,
+            }]),
+        });
+        let html = render(&snap);
+        assert!(!html.contains(secret));
+        assert!(!html.contains("10.23.45.67"));
+        assert!(html.contains("42%"));
+        assert!(html.contains("3 毫秒"));
+        assert!(html.contains("Content-Security-Policy"));
+        // Export must not destroy live diagnostic data.
+        assert_eq!(snap.interface_name, secret);
+        assert_eq!(
+            snap.events[0].trace.as_ref().unwrap()[0]
+                .hostname
+                .as_deref(),
+            Some(secret)
+        );
+    }
 
     #[test]
     fn escapes_html_special_characters() {

@@ -29,7 +29,7 @@ impl SegmentKind {
     /// 預設顯示名稱（找不到更具體的名字時使用）。
     pub fn default_label(self) -> &'static str {
         match self {
-            SegmentKind::Router => "家裡的網路",
+            SegmentKind::Router => "本機到閘道",
             SegmentKind::Isp => "電信商",
             SegmentKind::Domestic => "國內網路",
             SegmentKind::International => "國外網路",
@@ -40,7 +40,7 @@ impl SegmentKind {
     pub fn description(self) -> &'static str {
         match self {
             SegmentKind::Router => "你的電腦連到家裡的無線分享器或數據機",
-            SegmentKind::Isp => "從你家連到電信公司的機房",
+            SegmentKind::Isp => "自動推測的上游節點，需由資訊人員確認",
             SegmentKind::Domestic => "連到台灣國內的網站",
             SegmentKind::International => "連到國外的網站，像是 YouTube、Google",
         }
@@ -49,18 +49,18 @@ impl SegmentKind {
     /// 這一段壞掉時，該怪誰。這是整個工具最重要的一句話。
     pub fn blame(self) -> &'static str {
         match self {
-            SegmentKind::Router => "問題出在你家裡 —— 可能是 Wi-Fi 訊號不好，或是分享器該重開機了",
-            SegmentKind::Isp => "你家的網路設備正常，問題出在電信公司那一段",
+            SegmentKind::Router => "閘道探測異常，也可能是設備限制 ICMP 回應",
+            SegmentKind::Isp => "上游探測異常，尚不能確認故障位置",
             SegmentKind::Domestic => "連到國內網站的線路有問題",
-            SegmentKind::International => "國內連線正常，但連到國外的線路在塞車",
+            SegmentKind::International => "外部目標探測異常，可能受防火牆或流量管制影響",
         }
     }
 
     /// 這一段壞掉時，可以建議使用者做什麼。
     pub fn suggestion(self) -> &'static str {
         match self {
-            SegmentKind::Router => "可以先試著把無線分享器的電源拔掉，等 30 秒再插回去",
-            SegmentKind::Isp => "這不是你能修的，建議打電話給電信公司客服，並附上這份報告",
+            SegmentKind::Router => "請交由機關資訊人員確認連線與 ICMP 政策",
+            SegmentKind::Isp => "請將去識別報告交給機關資訊人員判讀",
             SegmentKind::Domestic => "如果只有特定網站連不上，通常是那個網站自己的問題",
             SegmentKind::International => "看國外影片可能會卡，但國內網站應該還是正常的",
         }
@@ -136,7 +136,7 @@ pub fn isp_from_hostname(hostname: &str) -> Option<&'static str> {
 ///
 /// 這個函式會在開始監測前跑一次。任何一步失敗都不會中斷整體流程，
 /// 只是那一段會被跳過或退回預設值，並在 `notes` 留下說明。
-pub async fn detect() -> Topology {
+pub async fn detect(external: bool) -> Topology {
     let mut notes = Vec::new();
     let mut segments = Vec::new();
 
@@ -181,30 +181,37 @@ pub async fn detect() -> Topology {
         notes.push("偵測不到家裡的路由器，可能是網路線沒插好或沒連上 Wi-Fi".into());
     }
 
+    if !external {
+        notes.push("僅測預設閘道；未執行外部探測、DNS 查詢或路徑追蹤。".into());
+        return Topology {
+            segments,
+            interface_name,
+            is_wifi,
+            local_ip,
+            gateway,
+            isp_name: None,
+            notes,
+        };
+    }
+
     // --- 第二段：電信商的第一台設備 ---
     // 用 traceroute 找出第一個公網位址。這比猜一個固定 IP 準確得多，
     // 因為每家電信商、每個地區的機房位址都不一樣。
     let mut isp_name = None;
-    let isp_addr = match traceroute::trace(
-        INTERNATIONAL_TARGET,
-        6,
-        Duration::from_millis(800),
-        1,
-    )
-    .await
-    {
-        Ok(hops) => match traceroute::first_isp_hop(&hops) {
-            Some(hop) => hop.addr,
-            None => {
-                notes.push("追蹤不到電信商的節點，改用預設位址監測這一段".into());
+    let isp_addr =
+        match traceroute::trace(INTERNATIONAL_TARGET, 6, Duration::from_millis(800), 1).await {
+            Ok(hops) => match traceroute::first_isp_hop(&hops) {
+                Some(hop) => hop.addr,
+                None => {
+                    notes.push("追蹤不到電信商的節點，改用預設位址監測這一段".into());
+                    None
+                }
+            },
+            Err(e) => {
+                notes.push(format!("路徑追蹤失敗：{e}"));
                 None
             }
-        },
-        Err(e) => {
-            notes.push(format!("路徑追蹤失敗：{e}"));
-            None
-        }
-    };
+        };
 
     let isp_addr = match isp_addr {
         Some(a) => a,
@@ -274,10 +281,7 @@ mod tests {
 
     #[test]
     fn recognises_isp_from_subdomain() {
-        assert_eq!(
-            isp_from_hostname("h254.s98.ts.hinet.net"),
-            Some("中華電信")
-        );
+        assert_eq!(isp_from_hostname("h254.s98.ts.hinet.net"), Some("中華電信"));
         assert_eq!(isp_from_hostname("HINET.NET"), Some("中華電信"));
         assert_eq!(
             isp_from_hostname("core1.tp.twmbroadband.net."),

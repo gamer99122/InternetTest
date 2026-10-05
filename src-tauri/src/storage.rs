@@ -29,13 +29,7 @@ impl Logger {
 
         // Excel 預設用系統編碼開 CSV，中文標題會變亂碼。
         // 這裡靠標題列全用英文避開這個問題，中文只出現在報告的 HTML 裡。
-        writer.write_record([
-            "timestamp",
-            "segment",
-            "target",
-            "rtt_ms",
-            "success",
-        ])?;
+        writer.write_record(["timestamp", "segment", "target", "rtt_ms", "success"])?;
         writer.flush()?;
 
         Ok(Logger {
@@ -49,13 +43,13 @@ impl Logger {
         &mut self,
         at: DateTime<Local>,
         kind: SegmentKind,
-        target: &str,
+        _target: &str,
         rtt_ms: Option<f64>,
     ) -> anyhow::Result<()> {
         self.writer.write_record([
             at.format("%Y-%m-%d %H:%M:%S%.3f").to_string().as_str(),
             segment_code(kind),
-            target,
+            "redacted",
             &rtt_ms.map(|v| format!("{v:.3}")).unwrap_or_default(),
             if rtt_ms.is_some() { "1" } else { "0" },
         ])?;
@@ -112,9 +106,13 @@ mod tests {
         let lines: Vec<&str> = content.lines().collect();
 
         assert_eq!(lines[0], "timestamp,segment,target,rtt_ms,success");
-        assert!(lines[1].contains("router,192.168.1.1,3.250,1"), "{}", lines[1]);
+        assert!(lines[1].contains("router,redacted,3.250,1"), "{}", lines[1]);
         // 失敗的那筆 rtt 欄位留空，success 是 0
-        assert!(lines[2].ends_with("international,1.1.1.1,,0"), "{}", lines[2]);
+        assert!(
+            lines[2].ends_with("international,redacted,,0"),
+            "{}",
+            lines[2]
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }

@@ -53,7 +53,22 @@ impl WifiStatus {
 /// 走的是 `netsh wlan show interfaces`。這是外部指令，任何一步失敗
 /// （沒有無線網卡、服務沒開、輸出格式不同）都只是回 None，不影響主要功能。
 pub fn status() -> Option<WifiStatus> {
-    let output = Command::new("netsh")
+    // Resolve the trusted system directory without searching PATH or the working directory.
+    let mut buffer = vec![0u16; 32768];
+    // SAFETY: buffer is writable and its capacity is passed in UTF-16 code units.
+    let len = unsafe {
+        windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW(
+            buffer.as_mut_ptr(),
+            buffer.len() as u32,
+        )
+    } as usize;
+    if len == 0 || len >= buffer.len() {
+        return None;
+    }
+    use std::os::windows::ffi::OsStringExt;
+    let path =
+        std::path::PathBuf::from(std::ffi::OsString::from_wide(&buffer[..len])).join("netsh.exe");
+    let output = Command::new(path)
         .args(["wlan", "show", "interfaces"])
         .creation_flags(CREATE_NO_WINDOW)
         .output()
