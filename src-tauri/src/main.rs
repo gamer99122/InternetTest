@@ -12,6 +12,7 @@ mod targets;
 mod traceroute;
 mod verdict;
 mod wifi;
+mod wifi_env;
 
 use std::path::PathBuf;
 
@@ -45,10 +46,16 @@ async fn start_monitoring(
     app: AppHandle,
     monitor: State<'_, Monitor>,
     external: Option<bool>,
+    wifi_scan: Option<bool>,
 ) -> Result<(), String> {
     let dir = output_dir(&app)?;
     monitor
-        .start(app.clone(), dir, external.unwrap_or(false))
+        .start(
+            app.clone(),
+            dir,
+            external.unwrap_or(false),
+            wifi_scan.unwrap_or(false),
+        )
         .await
         .map_err(|e| format!("無法開始檢測：{e}"))
 }

@@ -34,6 +34,12 @@ const el = {
   folderBtn: $("folderBtn"),
   toast: $("toast"),
   externalTests: $("externalTests"),
+  wifiScan: $("wifiScan"),
+  wifiEnvCard: $("wifiEnvCard"),
+  wifiEnvStatus: $("wifiEnvStatus"),
+  wifiEnvDetail: $("wifiEnvDetail"),
+  wifiEnvNote: $("wifiEnvNote"),
+  wifiEnvSuggestion: $("wifiEnvSuggestion"),
 };
 
 // 圓環半徑 52 的周長，和 CSS 裡的 stroke-dasharray 對應
@@ -64,9 +70,15 @@ function msText(value) {
 
 // ---------- 畫面更新 ----------
 
+// 檢測進行中或正在切換時，測試選項不能改：選項只在開始時生效
+function setOptionsDisabled(disabled) {
+  el.externalTests.disabled = disabled;
+  el.wifiScan.disabled = disabled;
+}
+
 function render(snap) {
   latest = snap;
-  el.externalTests.disabled = snap.running || busy;
+  setOptionsDisabled(snap.running || busy);
 
   // 標題列
   setClass(el.brandDot, "brand-dot", snap.running
@@ -105,7 +117,23 @@ function render(snap) {
   renderPath(snap);
   renderChart(snap);
   renderEvents(snap);
+  renderWifiEnv(snap);
   renderExtras(snap);
+}
+
+function renderWifiEnv(snap) {
+  const env = snap.wifi_env;
+  el.wifiEnvCard.hidden = !env;
+  if (!env) return;
+
+  el.wifiEnvStatus.textContent = env.status_text;
+  setClass(el.wifiEnvStatus, "extra-value", env.color);
+  el.wifiEnvDetail.textContent = env.detail;
+
+  el.wifiEnvNote.hidden = !env.note;
+  el.wifiEnvNote.textContent = env.note || "";
+  el.wifiEnvSuggestion.hidden = !env.suggestion;
+  el.wifiEnvSuggestion.textContent = env.suggestion ? `建議：${env.suggestion}` : "";
 }
 
 function renderPath(snap) {
@@ -320,7 +348,7 @@ async function refresh() {
 async function toggleMonitoring() {
   if (busy) return;
   busy = true;
-  el.externalTests.disabled = true;
+  setOptionsDisabled(true);
   el.startBtn.disabled = true;
 
   try {
@@ -329,7 +357,10 @@ async function toggleMonitoring() {
       showToast("已停止檢測。可以按「產生報告」把結果存下來。");
     } else {
       el.startBtnText.textContent = "正在偵測網路…";
-      await invoke("start_monitoring", { external: el.externalTests.checked });
+      await invoke("start_monitoring", {
+        external: el.externalTests.checked,
+        wifiScan: el.wifiScan.checked,
+      });
       await refresh();
     }
   } catch (err) {
@@ -338,7 +369,7 @@ async function toggleMonitoring() {
   } finally {
     busy = false;
     el.startBtn.disabled = false;
-    el.externalTests.disabled = Boolean(latest && latest.running);
+    setOptionsDisabled(Boolean(latest && latest.running));
   }
 }
 

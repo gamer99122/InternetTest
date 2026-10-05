@@ -21,6 +21,7 @@ use crate::targets::{Segment, SegmentKind, Topology};
 use crate::traceroute::{self, Hop};
 use crate::verdict::{self, DnsHealth, Reading, Verdict};
 use crate::wifi::WifiStatus;
+use crate::wifi_env::{self, Congestion, WifiEnvView};
 
 /// 每秒探測一次。再密會變成在測自己的 CPU，再疏會漏掉短暫的斷線。
 const TICK: Duration = Duration::from_secs(1);
@@ -34,6 +35,8 @@ const CHART_POINTS: usize = 60;
 const DNS_EVERY: u64 = 5;
 /// Wi-Fi 訊號每幾拍讀一次。開子行程有成本，不需要每秒讀。
 const WIFI_EVERY: u64 = 5;
+/// 附近無線環境每幾拍讀一次。頻道擁擠度變化很慢，不需要比這更密。
+const WIFI_SCAN_EVERY: u64 = 30;
 /// 事件清單最多留幾筆。
 const MAX_EVENTS: usize = 500;
 /// 判定斷線的依據段落：連不到國外就是使用者認知的「沒網路」。
@@ -105,6 +108,8 @@ pub struct Snapshot {
     pub events: Vec<OutageEvent>,
     pub wifi: Option<WifiStatus>,
     pub wifi_text: Option<String>,
+    /// 附近無線環境的分析。沒有啟用掃描時是 None，畫面上整塊不顯示。
+    pub wifi_env: Option<WifiEnvView>,
     pub dns: DnsView,
     /// 主折線圖（以國外那一段為準，最貼近使用者體感）
     pub chart: Vec<Option<f64>>,
@@ -112,6 +117,14 @@ pub struct Snapshot {
     pub isp_name: Option<String>,
     pub notes: Vec<String>,
     pub log_path: Option<String>,
+}
+
+/// 附近無線環境分析的進度。預設 `Off`：使用者沒有勾選就完全不讀取。
+enum EnvState {
+    Off,
+    Waiting,
+    Unavailable(&'static str),
+    Ready(Congestion),
 }
 
 /// 引擎的內部狀態。
@@ -122,6 +135,7 @@ struct State {
     dns_samples: VecDeque<Option<f64>>,
     dns_working: bool,
     wifi: Option<WifiStatus>,
+    wifi_env: EnvState,
     started_at: Option<DateTime<Local>>,
     tick: u64,
     events: Vec<OutageEvent>,
@@ -140,6 +154,7 @@ impl State {
             dns_samples: VecDeque::new(),
             dns_working: true,
             wifi: None,
+            wifi_env: EnvState::Off,
             started_at: None,
             tick: 0,
             events: Vec::new(),
@@ -154,6 +169,7 @@ impl State {
         self.dns_samples.clear();
         self.dns_working = true;
         self.wifi = None;
+        self.wifi_env = EnvState::Off;
         self.tick = 0;
         self.events.clear();
         self.open_outage = None;
@@ -202,6 +218,7 @@ impl Monitor {
         app: AppHandle,
         log_dir: PathBuf,
         external: bool,
+        wifi_scan: bool,
     ) -> anyhow::Result<()> {
         let _gate = self.start_gate.lock().await;
         if self.is_running() {
@@ -239,6 +256,11 @@ impl Monitor {
             }
             s.reset();
             s.running = true;
+            s.wifi_env = if wifi_scan {
+                EnvState::Waiting
+            } else {
+                EnvState::Off
+            };
             s.started_at = Some(started);
             for seg in &topology.segments {
                 s.windows.insert(seg.kind, Window::new(seg.kind, WINDOW));
@@ -286,6 +308,8 @@ async fn run_loop(state: Arc<Mutex<State>>, stop: Arc<AtomicBool>, app: AppHandl
     let mut ticker = tokio::time::interval(TICK);
     // 落後時直接跳過，不要為了補齊次數而連續猛打
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // 附近無線環境的掃描放背景跑，不能拖慢每秒一次的探測；同時只留一個
+    let mut scan_task: Option<tokio::task::JoinHandle<()>> = None;
 
     loop {
         ticker.tick().await;
@@ -293,14 +317,14 @@ async fn run_loop(state: Arc<Mutex<State>>, stop: Arc<AtomicBool>, app: AppHandl
             break;
         }
 
-        let (segments, tick_no) = {
+        let (segments, tick_no, scan_on) = {
             let s = state.lock();
             let segs = s
                 .topology
                 .as_ref()
                 .map(|t| t.segments.clone())
                 .unwrap_or_default();
-            (segs, s.tick)
+            (segs, s.tick, !matches!(s.wifi_env, EnvState::Off))
         };
 
         probe_round(&state, &segments).await;
@@ -321,6 +345,15 @@ async fn run_loop(state: Arc<Mutex<State>>, stop: Arc<AtomicBool>, app: AppHandl
                 .unwrap_or(None);
             state.lock().wifi = wifi;
         }
+        if scan_on
+            && tick_no % WIFI_SCAN_EVERY == 0
+            && scan_task.as_ref().map_or(true, |t| t.is_finished())
+        {
+            scan_task = Some(tokio::spawn(scan_wifi_environment(
+                state.clone(),
+                stop.clone(),
+            )));
+        }
 
         if stop.load(Ordering::SeqCst) {
             break;
@@ -339,6 +372,26 @@ async fn run_loop(state: Arc<Mutex<State>>, stop: Arc<AtomicBool>, app: AppHandl
     // 停下來之後再推一次，讓畫面上的狀態正確
     let snapshot = build_snapshot(&state.lock());
     let _ = app.emit("snapshot", &snapshot);
+}
+
+/// 讀一次附近的無線環境並更新分析結果。
+async fn scan_wifi_environment(state: Arc<Mutex<State>>, stop: Arc<AtomicBool>) {
+    let scanned = tokio::task::spawn_blocking(crate::wifi::scan_nearby).await;
+    let next = match scanned {
+        Ok(Ok(aps)) => match wifi_env::analyze(&aps) {
+            Some(congestion) => EnvState::Ready(congestion),
+            None => EnvState::Unavailable(wifi_env::OWN_AP_MISSING),
+        },
+        Ok(Err(issue)) => EnvState::Unavailable(issue.message()),
+        Err(_) => EnvState::Unavailable(crate::wifi::ScanIssue::NoResult.message()),
+    };
+
+    let mut s = state.lock();
+    // 檢測已經停止（或重新開始）就丟掉結果，不要寫進下一輪的狀態
+    if stop.load(Ordering::SeqCst) {
+        return;
+    }
+    s.wifi_env = next;
 }
 
 /// 同時探測所有段落。
@@ -692,6 +745,17 @@ fn build_snapshot(s: &State) -> Snapshot {
         dns_view.color = String::new();
     }
 
+    // 到閘道這一段不穩，才有「擁擠」和「不穩」是否同時發生的問題可以說
+    let link_unstable = summaries
+        .iter()
+        .any(|(seg, summary)| seg.kind == SegmentKind::Router && summary.grade >= Grade::Poor);
+    let wifi_env = match &s.wifi_env {
+        EnvState::Off => None,
+        EnvState::Waiting => Some(WifiEnvView::waiting()),
+        EnvState::Unavailable(reason) => Some(WifiEnvView::unavailable(reason)),
+        EnvState::Ready(congestion) => Some(congestion.view(link_unstable)),
+    };
+
     let outage_text = if s.events.is_empty() {
         "沒有斷線過".to_string()
     } else {
@@ -731,6 +795,7 @@ fn build_snapshot(s: &State) -> Snapshot {
         events,
         wifi_text: s.wifi.as_ref().and_then(|w| w.plain_text()),
         wifi: s.wifi.clone(),
+        wifi_env,
         dns: dns_view,
         chart,
         interface_name: topology
@@ -796,6 +861,81 @@ mod tests {
         let snap = build_snapshot(&s);
         assert_ne!(snap.dns.status_text, "未啟用");
         assert_eq!(snap.dns.color, "good");
+    }
+
+    #[test]
+    fn wifi_environment_is_absent_unless_the_user_turned_it_on() {
+        assert!(build_snapshot(&State::new()).wifi_env.is_none());
+
+        let mut s = State::new();
+        s.wifi_env = EnvState::Waiting;
+        s.reset();
+        assert!(
+            build_snapshot(&s).wifi_env.is_none(),
+            "重新開始後要回到關閉"
+        );
+    }
+
+    #[test]
+    fn wifi_environment_shows_progress_and_failure_without_pretending_to_know() {
+        let mut s = State::new();
+        s.wifi_env = EnvState::Waiting;
+        let waiting = build_snapshot(&s).wifi_env.unwrap();
+        assert_eq!(waiting.status_text, "讀取中");
+
+        s.wifi_env = EnvState::Unavailable("原因說明");
+        let failed = build_snapshot(&s).wifi_env.unwrap();
+        assert_eq!(failed.status_text, "無法分析");
+        // 沒有判斷就不能給顏色，綠色代表「測過而且正常」
+        assert_eq!(failed.color, "");
+        assert_eq!(failed.detail, "原因說明");
+    }
+
+    #[test]
+    fn wifi_environment_note_follows_the_gateway_segment() {
+        let crowded = Congestion {
+            level: wifi_env::Level::Crowded,
+            band: crate::wifi::Band::Ghz24,
+            own_channel: 6,
+            same_channel: 2,
+            overlapping: 2,
+            strong: 2,
+            visible_others: 5,
+            suggested_channel: Some(11),
+        };
+        let with_gateway = |rtt: Option<f64>| {
+            let mut s = State::new();
+            s.topology = Some(Topology {
+                segments: vec![Segment {
+                    kind: SegmentKind::Router,
+                    addr: std::net::Ipv4Addr::new(192, 0, 2, 1),
+                    label: "本機到閘道".into(),
+                    detail: String::new(),
+                }],
+                interface_name: String::new(),
+                is_wifi: true,
+                local_ip: None,
+                gateway: None,
+                isp_name: None,
+                notes: Vec::new(),
+            });
+            let mut w = Window::new(SegmentKind::Router, 10);
+            for _ in 0..5 {
+                w.push(Sample {
+                    at: Local::now(),
+                    rtt_ms: rtt,
+                });
+            }
+            s.windows.insert(SegmentKind::Router, w);
+            s.wifi_env = EnvState::Ready(crowded.clone());
+            build_snapshot(&s).wifi_env.unwrap()
+        };
+
+        let unstable = with_gateway(None);
+        assert!(unstable.note.unwrap().contains("無法證明因果"));
+        let stable = with_gateway(Some(3.0));
+        assert!(stable.note.unwrap().contains("仍然穩定"));
+        assert_eq!(stable.color, "poor");
     }
 
     #[test]

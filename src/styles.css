@@ -473,6 +473,11 @@ main {
 .extra-value.fair { color: var(--fair); }
 .extra-value.poor { color: var(--poor); }
 
+.wifi-env-detail {
+  margin: 6px 0 0;
+  color: var(--ink-soft);
+}
+
 /* ---------- 提示訊息 ---------- */
 
 .toast {

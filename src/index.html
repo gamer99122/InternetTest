@@ -40,6 +40,8 @@
 
       <p><label><input type="checkbox" id="externalTests"> 啟用外部網路測試（須經資訊人員同意）</label></p>
       <p class="section-hint">預設只探測預設閘道。勾選後會探測 HiNet、Cloudflare，並透過系統 DNS 查詢公共網域；外部服務可看到來源 IP。未回應可能是網路政策限制。</p>
+      <p><label><input type="checkbox" id="wifiScan"> 分析附近的 Wi-Fi 環境（須經資訊人員同意）</label></p>
+      <p class="section-hint">預設不啟用，也不會對外送出任何流量。勾選後會讀取 Windows 已有的附近無線網路掃描結果，只統計頻道與訊號強度，不儲存、不輸出任何網路名稱或位址。僅在使用 Wi-Fi 時有效。</p>
       <div class="actions">
         <button class="btn-primary" id="startBtn">
           <span id="startBtnText">開始檢測</span>
@@ -85,6 +87,18 @@
       <span class="section-hint">按「產生報告」可以存成一份檔案，交給機關資訊人員判讀</span>
     </h2>
     <ul class="events" id="events"></ul>
+  </section>
+
+  <!-- 附近的無線環境：只有勾選「分析附近的 Wi-Fi 環境」才會顯示 -->
+  <section class="card" id="wifiEnvCard" hidden>
+    <h2 class="section-title">
+      附近的無線環境
+      <span class="section-hint">資料來自 Windows 已有的掃描結果，約每 30 秒更新，只做數量與頻道的統計。頻道重疊不代表一定造成不穩。</span>
+    </h2>
+    <div class="extra-value" id="wifiEnvStatus">—</div>
+    <p class="wifi-env-detail" id="wifiEnvDetail"></p>
+    <div class="advice" id="wifiEnvNote" hidden></div>
+    <div class="advice" id="wifiEnvSuggestion" hidden></div>
   </section>
 
   <section class="card extras" id="extrasCard" hidden>

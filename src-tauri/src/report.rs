@@ -200,6 +200,35 @@ pub fn render(source: &Snapshot) -> String {
     }
     html.push_str("</div>\n");
 
+    // --- 附近的無線環境（使用者有勾選掃描才會有） ---
+    if let Some(env) = &snap.wifi_env {
+        html.push_str("<h2>附近的無線環境</h2>\n");
+        if env.color.is_empty() {
+            let _ = write!(html, "<p><strong>{}</strong></p>\n", esc(&env.status_text));
+        } else {
+            let _ = write!(
+                html,
+                "<p><span class=\"pill {}\">{}</span></p>\n",
+                esc(&env.color),
+                esc(&env.status_text),
+            );
+        }
+        let _ = write!(html, "<p>{}</p>\n", esc(&env.detail));
+        if let Some(note) = &env.note {
+            let _ = write!(html, "<p>{}</p>\n", esc(note));
+        }
+        if let Some(suggestion) = &env.suggestion {
+            let _ = write!(
+                html,
+                "<div class=\"advice\">建議：{}</div>\n",
+                esc(suggestion)
+            );
+        }
+        html.push_str(
+            "<p class=\"tech\">僅含頻道與訊號源數量的統計，不含任何網路名稱或位址。掃描結果是系統某個時間點的快照；頻道重疊不代表一定造成不穩。</p>\n",
+        );
+    }
+
     // --- 斷線紀錄 ---
     html.push_str("<h2>斷線紀錄</h2>\n");
     if snap.events.is_empty() {
@@ -356,6 +385,32 @@ mod tests {
                 .as_deref(),
             Some(secret)
         );
+    }
+
+    #[test]
+    fn report_includes_wifi_environment_only_when_it_was_enabled() {
+        let mut snap = crate::monitor::Monitor::new().snapshot();
+        assert!(
+            !render(&snap).contains("附近的無線環境"),
+            "沒啟用就不該出現"
+        );
+
+        snap.wifi_env = Some(crate::wifi_env::WifiEnvView {
+            status_text: "擁擠".into(),
+            color: "poor".into(),
+            detail: "目前連在 2.4 GHz 的 6 號頻道。<script>".into(),
+            note: Some("對照說明".into()),
+            suggestion: Some("可請機關資訊人員評估".into()),
+        });
+        let html = render(&snap);
+        assert!(html.contains("附近的無線環境"));
+        assert!(html.contains("pill poor"));
+        assert!(html.contains("6 號頻道"));
+        assert!(html.contains("對照說明"));
+        assert!(html.contains("資訊人員評估"));
+        assert!(html.contains("不含任何網路名稱或位址"));
+        // 文字一律跳脫，不能把標籤原樣帶進報告
+        assert!(!html.contains("<script>"));
     }
 
     #[test]
